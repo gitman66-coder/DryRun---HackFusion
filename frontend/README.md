@@ -1,34 +1,33 @@
 # Dryrun frontend
 
-React, TypeScript, Vite, Tailwind CSS, and React Router UI for the Dryrun repository rehearsal demo. The app is frontend-only; backend execution and enforcement are not implemented here.
+React, TypeScript, Vite, Tailwind CSS, and React Router UI for Dryrun.
 
-## Run locally
+## Run the connected application
 
-```sh
+Start the FastAPI backend from the repository root:
+
+```powershell
+py -m uvicorn backend.app:app --reload
+```
+
+In a second terminal, start the frontend:
+
+```powershell
+cd frontend
 npm install
 npm run dev
 ```
 
-The mock-flow tests use Node's built-in test runner and TypeScript type stripping (`npm test`, Node 22.6+).
+Vite proxies `/api` requests to `http://127.0.0.1:8000`; no separate CORS setup is needed for the local UI. The app connects to the backend by default. Copy `.env.example` to `.env.local` only if you want to change the defaults. Never put the Gemini key in a frontend environment file; it belongs in the repository-root `.env` used by FastAPI.
 
-Copy `.env.example` to `.env` to adjust the local settings. `VITE_USE_MOCKS=true` is the default and runs the complete demo without a backend. Set it to `false` and set `VITE_API_BASE_URL` to connect to a backend implementing the contract below.
+The real backend currently inspects public GitHub repositories in Docker, asks Gemini for a structured setup plan, waits for explicit approval, clones the repository into a per-run host workspace after approval, and executes the approved typed host actions. Repository files are untrusted input. API run records are in-memory and are cleared when the backend restarts.
 
-## Mock demo
+The backend does not yet execute the plan's sandbox rehearsal commands, replay in a clean room, launch a health-checked service, or roll back partially completed host actions. The UI reports those states only in mock mode and does not claim they occurred in backend mode.
 
-The mock progressively emits structured run snapshots and events. It demonstrates repository investigation, a failed first rehearsal, diagnosis and correction, a successful rehearsal, clean-room replay, approval, apply, and health check. Approval rejection ends before host changes. The advanced demo outcome selector can instead show an apply/health failure and a rollback that needs attention.
+## Mock walkthrough
 
-The UI shows typed actions and flags `system_package` as manual. It does not execute commands or install system packages. The mock's workspace action only reports the sample workspace path.
+To use the self-contained animated UI demo instead, set `VITE_USE_MOCKS=true` in `frontend/.env.local` and restart Vite. The mock demonstrates rehearsal, diagnosis, clean-room replay, approval, apply, and rollback states without running project commands.
 
-## Backend integration contract
+## Tests
 
-The boundary is in `src/services/api.ts` and `src/services/events.ts`; components consume `Run`, `Action`, and `TimelineEvent` from `src/types/index.ts`.
-
-Expected endpoints when mocks are disabled:
-
-- `POST /runs` with `{ repositoryUrl, workspaceName, preferredPort, environmentMode }` returns a `Run`.
-- `GET /runs/{id}` returns a `Run` snapshot.
-- `GET /runs/{id}/events` streams Server-Sent Events whose `data` is a complete `Run` snapshot as JSON. This can be changed to event deltas inside `events.ts` without changing page components.
-- `POST /runs/{id}/approval` with `{ decision: "approve" | "reject" }` returns a successful JSON response.
-- `POST /runs/{id}/workspace/open` requests the platform-specific workspace open action.
-
-`Run` contains repository, stage, state, attempt counters, sandbox and clean-room states, approval status, stage progress, typed actions, events, health check, and an optional result. Every action carries `kind`, structured `args`, `purpose`, `risk`, and `status`; `system_package` remains a manual action. See `src/types/index.ts` for the TypeScript model.
+With dependencies installed, `npm test` runs the frontend validation and mock-flow tests. `npm run build` checks TypeScript and produces the Vite production bundle.

@@ -15,3 +15,6 @@ node_modules/
 Initial push/
 .env
 frontend/dist/
+
+# Share safe frontend configuration examples
+!frontend/.env.example

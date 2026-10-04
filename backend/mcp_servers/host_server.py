@@ -207,6 +207,44 @@ def install_npm_packages(
         "stderr": result.stderr[-4000:],
     }
 
+@mcp.tool()
+def clone_repository_to_workspace(run_id: str, repo_url: str, approved: bool = False) -> dict[str, Any]:
+    """Clone a public GitHub repository into the approved run workspace under repo/."""
+    decision = policy_decision("write_file", run_id, approved)
+    if not decision["allowed"]:
+        return _blocked(decision)
+
+    from urllib.parse import urlsplit
+    parsed = urlsplit(repo_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if parsed.scheme != "https" or parsed.hostname != "github.com" or parsed.username or parsed.password or parsed.query or parsed.fragment or len(parts) != 2:
+        return {"ok": False, "error": "Only a plain HTTPS GitHub repository URL is accepted."}
+    owner, repository = parts
+    repository = repository.removesuffix(".git")
+    if not owner or not repository or owner in {".", ".."} or repository in {".", ".."}:
+        return {"ok": False, "error": "Invalid GitHub repository path."}
+    git = shutil.which("git")
+    if git is None:
+        return {"ok": False, "error": "git was not found on the host PATH."}
+
+    workspace = workspace_for_run(run_id)
+    target = resolve_workspace_path(run_id, "repo")
+    workspace.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        return {"ok": False, "error": "Repository destination already exists in this run workspace."}
+    normalized_url = f"https://github.com/{owner}/{repository}.git"
+    try:
+        result = subprocess.run(
+            [git, "clone", "--depth", "1", "--", normalized_url, str(target)],
+            cwd=str(workspace), capture_output=True, text=True, timeout=180, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": str(exc)}
+    if result.returncode != 0:
+        return {"ok": False, "returncode": result.returncode, "stderr": result.stderr[-3000:]}
+    return {"ok": True, "repository": f"{owner}/{repository}", "path": str(target)}
+
+
 _SECRET_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RUNNING_SERVICES: dict[tuple[str, int], subprocess.Popen[Any]] = {}
 
@@ -285,6 +323,14 @@ def start_project_service(
     safe_env_names = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOME", "LANG"}
     env = {key: value for key, value in os.environ.items() if key.upper() in safe_env_names}
     env.update({"HOST": "127.0.0.1", "PORT": str(port), "DRYRUN_PORT": str(port)})
+    # Secrets explicitly stored for this run are made available only to the approved service process.
+    try:
+        from dotenv import dotenv_values
+        secret_file = resolve_workspace_path(run_id, ".env")
+        if secret_file.is_file():
+            env.update({key: str(value) for key, value in dotenv_values(secret_file).items() if key and value is not None})
+    except (OSError, ValueError):
+        return {"ok": False, "error": "Could not safely read the run workspace environment file."}
     try:
         with log_path.open("ab") as log_file:
             process = subprocess.Popen(

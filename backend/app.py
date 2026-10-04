@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
@@ -11,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from backend.agent.mcp_client import connected_mcp_tools
 from backend.agent.model import get_chat_model
-from backend.agent.policy import canonical_run_id
+from backend.agent.policy import canonical_run_id, workspace_for_run
 from backend.agent.workflow import build_workflow
 
 # Demo storage: run plans survive API requests, but only until this process stops.
@@ -45,6 +46,9 @@ class AnalyzeRequest(BaseModel):
         max_length=2000,
     )
     run_id: str | None = None
+    workspace_name: str = Field(default="", max_length=80)
+    preferred_port: int = Field(default=8000, ge=1024, le=65535)
+    environment_mode: str = Field(default="development", pattern=r"^(development|test|production)$")
 
 
 class ApprovalRequest(BaseModel):
@@ -81,6 +85,7 @@ def _tool_payload(value: Any) -> dict[str, Any]:
 
 
 @app.get("/")
+@app.get("/health")
 async def health() -> dict[str, str]:
     """Simple liveness check for the API process."""
     return {"status": "ok", "service": "dryrun"}
@@ -102,6 +107,9 @@ async def analyze_repository(request: AnalyzeRequest) -> dict[str, Any]:
         "run_id": run_id,
         "repo_url": request.repo_url,
         "user_request": request.user_request,
+        "workspace_name": request.workspace_name.strip(),
+        "preferred_port": request.preferred_port,
+        "environment_mode": request.environment_mode,
         "status": "pending",
         "error": None,
     }
@@ -121,12 +129,24 @@ async def analyze_repository(request: AnalyzeRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Run could not be completed: {exc}") from exc
 
+    plan = result.get("plan")
+    if isinstance(plan, dict):
+        for action in plan.get("host_actions", []):
+            if action.get("kind") == "run_service":
+                action["port"] = request.preferred_port
+
     # Persist only the run result needed by the later approval and lookup endpoints.
     response = {
         "run_id": run_id,
         "status": result.get("status", "failed"),
         "error": result.get("error"),
         "repo_url": result.get("repo_url", request.repo_url),
+        "workspace_name": request.workspace_name.strip(),
+        "preferred_port": request.preferred_port,
+        "environment_mode": request.environment_mode,
+        "workspace": str(workspace_for_run(run_id)),
+        "workspace_ready": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "repository_facts": result.get("repository_facts"),
         "plan": result.get("plan"),
         "sandbox_cleanup": result.get("sandbox_cleanup"),
@@ -179,9 +199,6 @@ async def approve_plan(run_id: str, request: ApprovalRequest) -> dict[str, Any]:
                 status_code=422,
                 detail={"message": "Approval must explicitly include each planned host action exactly once.", "required_action_ids": sorted(required_ids)},
             )
-        if any(action.get("kind") == "system_package" for action in actions):
-            raise HTTPException(status_code=409, detail="System package installation is manual-only and cannot be executed by this API.")
-
         needed_secret_keys = {a["secret_key"] for a in actions if a.get("kind") == "write_secret"}
         if set(request.secrets) != needed_secret_keys:
             raise HTTPException(
@@ -202,6 +219,16 @@ async def approve_plan(run_id: str, request: ApprovalRequest) -> dict[str, Any]:
                 if not workspace_result.get("ok"):
                     raise RuntimeError(workspace_result.get("error") or workspace_result.get("reason") or "Could not create run workspace.")
 
+                clone_tool = tool_map.get("clone_repository_to_workspace")
+                if clone_tool is None:
+                    raise RuntimeError("Host MCP tool clone_repository_to_workspace is unavailable.")
+                clone_result = _tool_payload(await clone_tool.ainvoke({"run_id": run_id, "repo_url": run["repo_url"], "approved": True}))
+                if not clone_result.get("ok"):
+                    raise RuntimeError(clone_result.get("error") or clone_result.get("stderr") or "Could not clone repository into the approved workspace.")
+                run["repository_workspace"] = clone_result.get("path")
+                run["workspace"] = workspace_result.get("workspace")
+                run["workspace_ready"] = True
+
                 tool_names = {
                     "create_venv": "create_python_venv",
                     "pip_install": "install_python_packages",
@@ -210,8 +237,14 @@ async def approve_plan(run_id: str, request: ApprovalRequest) -> dict[str, Any]:
                     "write_secret": "write_secret",
                     "run_service": "start_project_service",
                 }
-                for action in actions:
+                # Keep dependency-sensitive operations in a stable order even if the model does not.
+                action_priority = {"create_venv": 0, "pip_install": 1, "npm_install": 1, "write_file": 2, "write_secret": 3, "run_service": 4, "system_package": 5}
+                ordered_actions = sorted(actions, key=lambda action: action_priority.get(action["kind"], 99))
+                for action in ordered_actions:
                     kind = action["kind"]
+                    if kind == "system_package":
+                        results.append({"action_id": action["action_id"], "ok": True, "manual_required": True, "message": "Install this operating-system package manually; Dryrun never performs system package installs."})
+                        continue
                     tool_name = tool_names.get(kind)
                     tool = tool_map.get(tool_name or "")
                     if tool is None:
@@ -236,7 +269,9 @@ async def approve_plan(run_id: str, request: ApprovalRequest) -> dict[str, Any]:
             raise HTTPException(status_code=500, detail=run["error"]) from exc
 
         run["action_results"] = results
+        run["workspace"] = workspace_result.get("workspace", run.get("workspace"))
+        run["workspace_ready"] = True
         run["status"] = "completed" if all(item.get("ok", False) for item in results) else "failed"
         if run["status"] == "failed":
             run["error"] = "One or more approved host actions did not succeed. Review action_results."
-        return {"run_id": run_id, "status": run["status"], "workspace": workspace_result.get("workspace"), "action_results": results, "error": run.get("error")}
+        return {"run_id": run_id, "status": run["status"], "workspace": run.get("workspace"), "action_results": results, "error": run.get("error")}
