@@ -18,9 +18,9 @@ npm install
 npm run dev
 ```
 
-Vite proxies `/api` requests to `http://127.0.0.1:8000`; no separate CORS setup is needed for the local UI. The app connects to the backend by default. Copy `.env.example` to `.env.local` only if you want to change the defaults. Never put the Gemini key in a frontend environment file; it belongs in the repository-root `.env` used by FastAPI.
+Vite proxies `/api` requests to `http://127.0.0.1:8000`; no separate CORS setup is needed for the local UI. The app connects to the backend by default. Copy `.env.example` to `.env.local` only if you want to change the defaults. Never put the Groq key in a frontend environment file; it belongs in the repository-root `.env` used by FastAPI.
 
-The real backend currently inspects public GitHub repositories in Docker, asks Gemini for a structured setup plan, waits for explicit approval, clones the repository into a per-run host workspace after approval, and executes the approved typed host actions. Repository files are untrusted input. API run records are in-memory and are cleared when the backend restarts.
+The real backend currently inspects public GitHub repositories in Docker, asks Groq for a structured setup plan, waits for explicit approval, clones the repository into a per-run host workspace after approval, and executes the approved typed host actions. Repository files are untrusted input. API run records are in-memory and are cleared when the backend restarts.
 
 The backend does not yet execute the plan's sandbox rehearsal commands, replay in a clean room, launch a health-checked service, or roll back partially completed host actions. The UI reports those states only in mock mode and does not claim they occurred in backend mode.
 

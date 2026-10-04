@@ -65,7 +65,7 @@ LangGraph is intended to manage the workflow and its checkpointed state. Custom 
 | Host inspection | `psutil`, `platform`, `shutil` |
 | Frontend | React, Vite, Tailwind CSS |
 | Event streaming | Server-Sent Events |
-| Model provider | Gemini or NVIDIA NIM (provider/model configuration to be finalized) |
+| Model provider | Groq (`openai/gpt-oss-20b`) via LangChain |
 
 Library APIs and model names change over time. Check the current official documentation when implementing integrations.
 

@@ -60,6 +60,14 @@ class ApprovalRequest(BaseModel):
     secrets: dict[str, str] = Field(default_factory=dict)
 
 
+def _exception_details(exc: BaseException) -> str:
+    """Flatten ExceptionGroup errors so API responses reveal the failed MCP/model step."""
+    if isinstance(exc, BaseExceptionGroup):
+        return "; ".join(_exception_details(child) for child in exc.exceptions)
+    message = str(exc).strip()
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+
 def _tool_payload(value: Any) -> dict[str, Any]:
     """Unwrap common LangChain MCP tool response formats."""
     if isinstance(value, tuple) and len(value) == 2:
@@ -127,7 +135,7 @@ async def analyze_repository(request: AnalyzeRequest) -> dict[str, Any]:
                     if not cleanup.get("ok", True) and not cleanup.get("status") == "destroyed":
                         result["cleanup_warning"] = cleanup.get("error", "Sandbox cleanup was not confirmed.")
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Run could not be completed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Run could not be completed: {_exception_details(exc)}") from exc
 
     plan = result.get("plan")
     if isinstance(plan, dict):

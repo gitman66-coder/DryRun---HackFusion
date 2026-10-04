@@ -9,9 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from backend.agent.state import ActionKind
 
 
-# Keep this wire schema to Gemini's supported JSON Schema subset. The stricter
+# Keep this wire schema to a portable JSON Schema subset. The stricter
 # Pydantic models below validate the returned data locally after generation.
 PLAN_OUTPUT_SCHEMA = {
+    "title": "DryrunProjectPlan",
+    "description": "Evidence-based, approval-gated repository setup plan for Dryrun.",
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "Evidence-based plan summary."},
@@ -43,7 +45,10 @@ PLAN_OUTPUT_SCHEMA = {
                     "packages": {"type": "array", "items": {"type": "string"}},
                     "relative_path": {"type": "string"},
                     "file_content": {"type": "string"},
-                    "service_script": {"type": "string"},
+                    "service_script": {
+                        "type": "string",
+                        "description": "Path to an existing Python script inside repo/, such as repo/server.py. Never put a launch command here.",
+                    },
                     "port": {"type": "integer"},
                     "secret_key": {"type": "string"},
                 },
@@ -148,5 +153,3 @@ class ProjectPlan(BaseModel):
     detected_stack: list[str] = Field(default_factory=list, max_length=20)
     rehearsal_steps: list[RehearsalStep] = Field(default_factory=list, max_length=20)
     host_actions: list[HostAction] = Field(default_factory=list, max_length=20)
-
-
