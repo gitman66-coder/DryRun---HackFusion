@@ -1,0 +1,3 @@
+import { Activity, CheckCircle2, CircleDashed } from 'lucide-react'
+import type { HealthCheck } from '../../types'
+export function HealthStatus({ health }: { health: HealthCheck }) { const healthy = health.status === 'healthy'; return <div className={`health-box ${healthy ? 'health-ok' : ''}`}><span className="health-icon">{healthy ? <CheckCircle2 size={17} /> : health.status === 'unhealthy' ? <Activity size={17} /> : <CircleDashed size={17} />}</span><div><strong>{healthy ? 'Healthy' : health.status === 'unhealthy' ? 'Unhealthy' : 'Awaiting check'}</strong><small>{health.service ? `${health.service} · port ${health.port}` : 'Health check runs after apply'}</small></div></div> }

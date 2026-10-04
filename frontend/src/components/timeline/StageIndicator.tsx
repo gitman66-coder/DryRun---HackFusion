@@ -1,0 +1,3 @@
+import { StatusIndicator } from '../status/StatusIndicator'
+import type { StageProgress } from '../../types'
+export function StageIndicator({ stage, index, last = false }: { stage: StageProgress; index: number; last?: boolean }) { return <div className={`stage-row ${stage.state === 'running' ? 'stage-active' : ''}`}><div className="stage-track"><StatusIndicator state={stage.state} /><span className="stage-index">{String(index + 1).padStart(2, '0')}</span>{!last && <span className={`stage-line ${stage.state === 'success' ? 'line-done' : ''}`} />}</div><div className="stage-label"><strong>{stage.label}</strong><span>{stage.state === 'pending' ? 'Queued' : stage.state.replace('_', ' ')}</span></div></div> }

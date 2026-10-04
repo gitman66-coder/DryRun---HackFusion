@@ -1,0 +1,2 @@
+import type { ReactNode } from 'react'
+export function MetricCard({ label, value, detail, icon, tone = '' }: { label: string; value: string; detail?: string; icon?: ReactNode; tone?: string }) { return <div className="metric"><div className="metric-top"><span>{label}</span>{icon && <span className="metric-icon">{icon}</span>}</div><strong className={tone}>{value}</strong>{detail && <small>{detail}</small>}</div> }
