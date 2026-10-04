@@ -13,3 +13,4 @@ node_modules/
 
 # Local project folder
 Initial push/
+.env
