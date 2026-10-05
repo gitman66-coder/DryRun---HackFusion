@@ -1,118 +1,113 @@
-Dryrun
+# Dryrun
 
-**Get a GitHub project running with more confidence.** Dryrun investigates a repository, rehearses its setup in a disposable Docker sandbox, verifies the successful steps from a clean environment, and shows you what it plans to change before applying anything to your machine.
+**Check whether a GitHub project's documented setup works in a disposable Docker sandbox.** Dryrun reads the repository README and setup manifests, asks an AI planner for bounded checks, runs those checks in Docker, and reports the results with a heuristic risk estimate.
 
-> Dryrun is a project in development. Treat it as experimental software and only try it with repositories you trust.
+Dryrun ends with the sandbox report. It does not request approval, modify your host, or claim that a passing container guarantees compatibility with your computer.
 
 ## The problem
 
-A promising repository can be surprisingly hard to run. The README may be out of date, a runtime version may not match, or an install may fail because of a missing dependency. Debugging can take hours and leave a machine cluttered with partial installs.
+A repository can look ready but still fail at installation or startup because its instructions are incomplete, its dependencies are stale, or an expected file is missing. Finding out by trying it directly can waste time and leave partial setup changes behind.
 
-Dryrun aims to make that process safer and easier to understand by testing setup steps before they reach your host machine.
+Dryrun gives you an isolated first run. It uses repository documentation as evidence, executes supported setup checks inside a disposable container, and shows the command output and failure point.
 
-## How it works
+## How a run works
 
-1. **Investigate** - Clone the repository into a sandbox and inspect its README, source files, dependency manifests, Docker configuration, and CI workflows.
-2. **Plan** - Turn the evidence into an ordered, typed list of setup actions.
-3. **Rehearse** - Run the plan in a disposable Docker container. If a step fails, diagnose the error and revise the plan, with a limit on retry attempts.
-4. **Verify** - Replay the successful plan in a fresh container to catch hidden dependencies on the earlier rehearsal.
-5. **Review** - Present the proposed changes, ports, and risk levels for human approval.
-6. **Apply and check** - Apply approved actions inside an isolated workspace, start the app, and check that it responds.
-7. **Roll back** - Clean up the workspace and processes if applying the plan or checking the app fails.
+1. **Inspect** - Clone a public GitHub repository into a Docker container and collect a bounded inventory of README and setup files.
+2. **Plan** - Ask the model for up to eight evidence-based setup or smoke-check commands.
+3. **Check** - Run those commands from the cloned repository directory in that same container. Each step has a timeout; total execution is capped at ten minutes, and later steps stop after a failure.
+4. **Report** - Return the exit codes and output, a pass/fail/inconclusive feasibility result, and a heuristic risk level.
+5. **Clean up** - Remove the disposable Docker container after the report is saved.
 
-A live event timeline is intended to show what Dryrun is doing, including failures and recoveries.
+The container has memory, CPU, and process limits and no project folder mounted from the host. Dependencies may need network access during installation. Commands execute project code inside Docker, so run Dryrun only on repositories you trust.
 
-## Safety principles
+## What the result means
 
-- **Rehearse before applying.** Exploratory setup runs in a disposable container.
-- **Keep host changes inside a workspace.** Repositories, environments, and generated files should stay within a run-specific directory.
-- **Enforce policy in code.** A policy engine validates typed actions independently of the language model. Unrecognized actions and paths outside the workspace are rejected by default.
-- **Require approval.** The user reviews the verified plan before host changes begin.
-- **Keep rollback available.** Track processes and workspace files so a run can be cleaned up.
-- **Treat repository content as untrusted input.** A README or source file may inform the plan, but cannot override the policy engine.
+- **Passed:** all planned checks returned exit code zero in the Dryrun Docker image.
+- **Failed:** at least one planned check returned a non-zero exit code or could not run.
+- **Inconclusive:** the repository evidence did not support a safe, specific check.
+- **Risk:** a transparent heuristic based on command patterns, not a security audit.
+- **Machine compatibility:** not directly measured. The sandbox uses Dryrun's Linux image, so its result is evidence about that container, not a guarantee for your host OS or hardware.
 
-These safeguards are design goals; they are not a claim that the current project implementation is complete or secure.
+The planner follows repository files as data, not instructions. Its proposed commands are still AI-generated. The Docker container is the execution boundary; review the output and risk estimate as advisory information.
 
-## Planned architecture
+## Architecture
 
 ```text
-React dashboard
-      │ REST + Server-Sent Events
-      ▼
-FastAPI service
-      │
-      ▼
-LangGraph workflow ── MCP tools
-      │                 ├─ Docker sandbox
-      │                 ├─ Read-only host inspection
-      │                 └─ Policy-gated host actions
-      ▼
-Investigate → Plan → Rehearse → Clean-room replay
-                              → Human approval → Apply → Health check
+React + Vite interface
+        │ POST /runs, GET /runs/{id}
+        ▼
+FastAPI ── LangGraph workflow ── Groq model via LangChain
+        │                            │
+        └──── sandbox MCP tools ◄────┘
+                 │
+                 ▼
+      disposable Docker container
+      clone → inspect → run checks → destroy
+                 │
+                 ▼
+      evidence + outputs + risk report
 ```
 
-LangGraph is intended to manage the workflow and its checkpointed state. Custom MCP servers provide tool access to the sandbox and host operations. SQLite is planned for run checkpoints, while FastAPI streams run events to the React dashboard.
+The connected application exposes only the sandbox MCP server. There is no approval endpoint or host-apply route in the run workflow. Run records are kept in memory and are cleared when the API process restarts.
 
-## Planned technology
+## Technology stack
 
 | Area | Technology |
 | --- | --- |
-| Backend | Python 3.11+, FastAPI, Uvicorn |
-| Agent workflow | LangChain and LangGraph |
-| Tool interface | MCP Python SDK and `langchain-mcp-adapters` |
-| Sandbox | Docker and Docker SDK for Python |
-| State and validation | SQLite, Pydantic |
-| Host inspection | `psutil`, `platform`, `shutil` |
-| Frontend | React, Vite, Tailwind CSS |
-| Event streaming | Server-Sent Events |
-| Model provider | Groq (`openai/gpt-oss-20b`) via LangChain |
+| Backend API | Python 3.12, FastAPI, Uvicorn |
+| Workflow | LangGraph and LangChain |
+| Model | Groq through LangChain |
+| Tool integration | MCP Python SDK and `langchain-mcp-adapters` |
+| Isolated execution | Docker, Docker SDK for Python |
+| Plan validation | Pydantic |
+| Frontend | React, TypeScript, Vite, Tailwind CSS, React Router |
 
-Library APIs and model names change over time. Check the current official documentation when implementing integrations.
+## Run locally
 
-## Intended repository layout
+Prerequisites: Python, Node.js/npm, Docker Desktop, and a Groq API key.
 
-```text
-dryrun/
-├── backend/
-│   ├── agent/          # State, workflow nodes, policy, and model setup
-│   ├── mcp_servers/    # Sandbox, host inspection, and gated host tools
-│   ├── sandbox/        # Docker image for rehearsals
-│   ├── api.py          # FastAPI endpoints and event streaming
-│   └── events.py       # Per-run event handling
-├── frontend/           # React dashboard
-└── demo/               # Vetted demo repositories and demo notes
-```
+1. Install backend dependencies from the repository root:
 
-The implementation may change as the project develops.
+   ```powershell
+   py -m pip install -r requirements.txt
+   ```
 
-## Project status
+2. Build the sandbox image from the repository root:
 
-Dryrun is at the project-planning / early development stage. The architecture and workflow described here are intended behavior; implemented features, supported operating systems, and installation steps will be documented as they become available.
+   ```powershell
+   docker build -t dryrun-base -f backend/sandbox/Dockerfile .
+   ```
 
-## Development setup
+3. Put your Groq key in the repository-root `.env` file as `GROQ_API_KEY=...`. Keep `.env` out of Git.
+4. Start the backend from the repository root:
 
-Setup instructions will be added once the repository structure and dependencies are in place. The planned development environment uses Python 3.11+, Node.js/npm, and Docker. An LLM provider API key will be needed for agent runs.
+   ```powershell
+   py -m uvicorn backend.app:app --reload
+   ```
 
-Keep provider credentials in a local `.env` file, add `.env` to `.gitignore`, and never commit real secrets. Do not run Dryrun against repositories you have not reviewed.
+5. In a second terminal, install and start the frontend:
 
-## Demo goals
+   ```powershell
+   cd frontend
+   npm install
+   npm run dev
+   ```
 
-The planned demo covers three cases:
+Open the Vite URL printed in the terminal. The frontend uses `/api` and proxies it to the local FastAPI service.
 
-1. A small Python app that installs and starts successfully.
-2. A Node app that fails initially and recovers after a plan adjustment.
-3. A repository that cannot be run and exits cleanly with rollback.
+## Demo mode
 
-## Roadmap
+Set `VITE_USE_MOCKS=true` in `frontend/.env.local` and restart Vite to preview simulated sandbox pass and failure reports. Mock mode does not run repository commands.
 
-- [ ] Build the Docker rehearsal image and sandbox tools.
-- [ ] Analyze repositories and generate typed setup plans.
-- [ ] Add bounded diagnose-and-retry behavior.
-- [ ] Replay successful plans in a clean sandbox.
-- [ ] Implement the host policy engine, approval pause, and rollback.
-- [ ] Add the API and live event stream.
-- [ ] Build the dashboard and demo workflow.
+## Known limitations
+
+- Only public GitHub repositories are accepted.
+- The planner can only use files selected by the repository inspector and the Docker base image's installed tools.
+- A generated check can be incomplete or unsuitable for a particular project. In that case, the report should be treated as inconclusive or reviewed carefully.
+- The risk rating is heuristic and does not guarantee a command is harmless.
+- A sandbox pass does not prove compatibility with a developer's host machine.
+- Run history is stored in memory and is lost when the backend restarts.
 
 ## License
 
-No license has been selected yet. Until a license is added, all rights are reserved by the project owner.
+No license has been selected yet. Until one is added, all rights are reserved by the project owner.

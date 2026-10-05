@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import time
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -10,7 +11,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 
 from backend.agent.planning import generate_project_plan
-from backend.agent.policy import canonical_run_id
+from backend.agent.run_id import canonical_run_id
 from backend.agent.state import RunState
 
 IMPORTANT_FILES = {
@@ -159,13 +160,79 @@ async def investigate_repository(state: RunState, tools: list[BaseTool]) -> RunS
             "error": None,
         }
     except Exception as exc:
-        if sandbox_id:
-            try:
-                await tool_map["destroy_sandbox"].ainvoke({"sandbox_id": sandbox_id})
-            except Exception:
-                pass
-        return {"status": "failed", "error": str(exc)}
+        # Return the ID even on inspection failures so the API's single cleanup
+        # path can destroy the container and report any cleanup problem.
+        return {"sandbox_id": sandbox_id, "status": "failed", "error": str(exc)}
 
+
+
+MAX_REHEARSAL_SECONDS = 600
+
+
+def assess_command_risk(commands: list[str]) -> dict[str, str]:
+    """Estimate command risk with a transparent, conservative heuristic."""
+    lowered = "\n".join(commands).casefold()
+    high_markers = ("sudo ", "apt-get install", "apt install", "apk add", "dnf install", "yum install", "curl ", "wget ", "rm -rf", "mkfs", "dd if=", "chmod 777")
+    medium_markers = ("pip install", "pip3 install", "uv sync", "poetry install", "npm install", "npm ci", "pnpm install", "yarn install", "make ", "cargo build", "cargo test", "go test", "python ", "pytest", "npm run")
+    if any(marker in lowered for marker in high_markers):
+        return {"level": "high", "reason": "A planned command matches a broad system, remote-script, or destructive pattern. Commands still run only in the disposable container."}
+    if any(marker in lowered for marker in medium_markers):
+        return {"level": "medium", "reason": "The plan installs dependencies or executes project code inside the disposable container."}
+    return {"level": "low", "reason": "The plan contains only lightweight inspection or validation commands."}
+
+
+async def run_sandbox_checks(state: RunState, tools: list[BaseTool]) -> RunState:
+    """Execute bounded setup checks in the already isolated Docker sandbox."""
+    tool_map = {tool.name: tool for tool in tools}
+    shell = tool_map.get("sandbox_shell")
+    sandbox_id = state.get("sandbox_id")
+    steps = (state.get("plan") or {}).get("rehearsal_steps", [])
+    risk = assess_command_risk([str(step.get("command", "")) for step in steps])
+    if not steps:
+        return {
+            "status": "completed",
+            "rehearsal_results": [],
+            "risk_assessment": risk,
+            "feasibility": {"status": "inconclusive", "reason": "Repository evidence did not support a safe, specific setup check."},
+        }
+    if not sandbox_id or shell is None:
+        return {"status": "failed", "error": "The disposable sandbox or sandbox command tool is unavailable."}
+
+    results: list[dict[str, Any]] = []
+    deadline = time.monotonic() + MAX_REHEARSAL_SECONDS
+    stopped = False
+    for index, step in enumerate(steps, start=1):
+        description = str(step.get("description", f"Sandbox check {index}"))
+        command = str(step.get("command", ""))
+        remaining = int(deadline - time.monotonic())
+        if stopped or remaining <= 0:
+            results.append({"index": index, "description": description, "command": command, "status": "skipped", "exit_code": None, "stdout": "", "stderr": "A prior check failed or the 10-minute total verification budget was reached."})
+            stopped = True
+            continue
+        timeout = min(int(step.get("timeout_seconds", 120)), 180, remaining)
+        sandbox_command = f"cd /workspace/repo && ( {command} )"
+        try:
+            response = _as_dict(await shell.ainvoke({"sandbox_id": sandbox_id, "command": sandbox_command, "timeout": timeout}))
+            exit_code = response.get("exit_code")
+            if not isinstance(exit_code, int):
+                result = {"index": index, "description": description, "command": command, "status": "failed", "exit_code": None, "stdout": str(response.get("stdout", "")), "stderr": str(response.get("error") or response.get("stderr") or "Sandbox command returned no exit code.")}
+                stopped = True
+            else:
+                passed = exit_code == 0
+                result = {"index": index, "description": description, "command": command, "status": "passed" if passed else "failed", "exit_code": exit_code, "stdout": str(response.get("stdout", "")), "stderr": str(response.get("stderr", ""))}
+                if not passed:
+                    stopped = True
+        except Exception as exc:
+            result = {"index": index, "description": description, "command": command, "status": "failed", "exit_code": None, "stdout": "", "stderr": f"{type(exc).__name__}: {exc}"}
+            stopped = True
+        results.append(result)
+
+    passed = bool(results) and all(item["status"] == "passed" for item in results)
+    feasibility = {
+        "status": "passed" if passed else "failed",
+        "reason": "Every planned check exited successfully inside Docker." if passed else "At least one planned check failed or was skipped inside Docker.",
+    }
+    return {"status": "completed", "rehearsal_results": results, "risk_assessment": risk, "feasibility": feasibility, "error": None}
 
 def build_workflow(tools: list[BaseTool] | None = None, planner_model: Any | None = None):
     """Build the graph, optionally adding Docker investigation and model planning."""
@@ -184,6 +251,12 @@ def build_workflow(tools: list[BaseTool] | None = None, planner_model: Any | Non
             return await generate_project_plan(state, planner_model)
 
         builder.add_node("create_plan", planning_node)
+
+    if tools is not None and planner_model is not None:
+        async def rehearsal_node(state: RunState) -> RunState:
+            return await run_sandbox_checks(state, tools)
+
+        builder.add_node("run_sandbox_checks", rehearsal_node)
 
     next_after_validation = "investigate" if tools is not None else ("plan" if planner_model is not None else "end")
     validation_routes = {"end": END}
@@ -204,7 +277,14 @@ def build_workflow(tools: list[BaseTool] | None = None, planner_model: Any | Non
             lambda state: next_after_investigation if state.get("status") == "analyzing" else "end",
             validation_routes,
         )
-    if planner_model is not None:
+    if planner_model is not None and tools is not None:
+        builder.add_conditional_edges(
+            "create_plan",
+            lambda state: "run" if state.get("status") == "planned" else "end",
+            {"run": "run_sandbox_checks", "end": END},
+        )
+        builder.add_edge("run_sandbox_checks", END)
+    elif planner_model is not None:
         builder.add_edge("create_plan", END)
 
     return builder.compile()

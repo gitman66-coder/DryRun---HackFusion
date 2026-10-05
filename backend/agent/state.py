@@ -6,23 +6,10 @@ RunStatus = Literal[
     "pending",
     "analyzing",
     "planned",
-    "awaiting_approval",
-    "approved",
-    "executing",
     "completed",
-    "rejected",
     "failed",
 ]
 
-ActionKind = Literal[
-    "create_venv",
-    "pip_install",
-    "npm_install",
-    "write_file",
-    "run_service",
-    "write_secret",
-    "system_package",
-]
 
 
 class RunState(TypedDict, total=False):
@@ -35,8 +22,9 @@ class RunState(TypedDict, total=False):
     status: RunStatus
     repository_facts: dict[str, Any]
     plan: dict[str, Any]
-    approval: Literal["approved", "rejected"] | None
-    results: list[dict[str, Any]]
+    rehearsal_results: list[dict[str, Any]]
+    feasibility: dict[str, Any]
+    risk_assessment: dict[str, Any]
     error: str | None
 
 

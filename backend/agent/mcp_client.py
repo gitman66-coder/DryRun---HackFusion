@@ -14,8 +14,6 @@ from langchain_mcp_adapters.tools import load_mcp_tools
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SERVER_FILES = {
     "sandbox": PROJECT_ROOT / "backend" / "mcp_servers" / "sandbox_server.py",
-    "system": PROJECT_ROOT / "backend" / "mcp_servers" / "system_server.py",
-    "host": PROJECT_ROOT / "backend" / "mcp_servers" / "host_server.py",
 }
 
 
@@ -47,12 +45,17 @@ def _server_connections() -> dict[str, dict[str, object]]:
 
 
 @asynccontextmanager
-async def connected_mcp_tools() -> AsyncIterator[list[BaseTool]]:
-    """Connect to all MCP servers and keep their sessions alive while tools are used."""
-    client = MultiServerMCPClient(_server_connections())
+async def connected_mcp_tools(server_names: tuple[str, ...] | None = None) -> AsyncIterator[list[BaseTool]]:
+    """Connect to selected local MCP servers for one request."""
+    connections = _server_connections()
+    selected = server_names or tuple(connections)
+    unknown = set(selected) - connections.keys()
+    if unknown:
+        raise ValueError(f"Unknown MCP server(s): {', '.join(sorted(unknown))}")
+    client = MultiServerMCPClient({name: connections[name] for name in selected})
     async with AsyncExitStack() as stack:
         tools: list[BaseTool] = []
-        for server_name in SERVER_FILES:
+        for server_name in selected:
             session = await stack.enter_async_context(client.session(server_name))
             tools.extend(await load_mcp_tools(session))
         yield tools

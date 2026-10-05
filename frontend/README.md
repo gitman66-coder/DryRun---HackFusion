@@ -1,6 +1,6 @@
 # Dryrun frontend
 
-React, TypeScript, Vite, Tailwind CSS, and React Router UI for Dryrun.
+React, TypeScript, Vite, Tailwind CSS, and React Router UI for the sandbox-only repository feasibility workflow.
 
 ## Run the connected application
 
@@ -10,7 +10,7 @@ Start the FastAPI backend from the repository root:
 py -m uvicorn backend.app:app --reload
 ```
 
-In a second terminal, start the frontend:
+In a second terminal:
 
 ```powershell
 cd frontend
@@ -18,16 +18,16 @@ npm install
 npm run dev
 ```
 
-Vite proxies `/api` requests to `http://127.0.0.1:8000`; no separate CORS setup is needed for the local UI. The app connects to the backend by default. Copy `.env.example` to `.env.local` only if you want to change the defaults. Never put the Groq key in a frontend environment file; it belongs in the repository-root `.env` used by FastAPI.
+Vite proxies `/api` requests to `http://127.0.0.1:8000`. The Groq key belongs in the repository-root `.env`; never place it in a frontend environment file.
 
-The real backend currently inspects public GitHub repositories in Docker, asks Groq for a structured setup plan, waits for explicit approval, clones the repository into a per-run host workspace after approval, and executes the approved typed host actions. Repository files are untrusted input. API run records are in-memory and are cleared when the backend restarts.
+The backend clones a public repository into a disposable Docker sandbox, reads README and setup manifests, generates a bounded plan, executes the planned commands in the container, and returns command output, estimated risk, and a feasibility result. It destroys the container after the run. It has no approval endpoint or host-apply stage. A pass describes the Dryrun container, not guaranteed compatibility with your machine.
 
-The backend does not yet execute the plan's sandbox rehearsal commands, replay in a clean room, launch a health-checked service, or roll back partially completed host actions. The UI reports those states only in mock mode and does not claim they occurred in backend mode.
+Build the `dryrun-base` image from the repository root before starting a real run:
 
-## Mock walkthrough
+```powershell
+docker build -t dryrun-base -f backend/sandbox/Dockerfile .
+```
 
-To use the self-contained animated UI demo instead, set `VITE_USE_MOCKS=true` in `frontend/.env.local` and restart Vite. The mock demonstrates rehearsal, diagnosis, clean-room replay, approval, apply, and rollback states without running project commands.
+## Demo mode
 
-## Tests
-
-With dependencies installed, `npm test` runs the frontend validation and mock-flow tests. `npm run build` checks TypeScript and produces the Vite production bundle.
+Set `VITE_USE_MOCKS=true` in `frontend/.env.local` and restart Vite to see simulated pass and failure reports. Mock mode does not execute setup commands.
